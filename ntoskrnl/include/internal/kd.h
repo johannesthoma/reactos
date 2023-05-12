@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cportlib/cportlib.h>
+#include <reactos/rossym.h>
 
 //
 // Kernel Debugger Port Definition
