@@ -1,13 +1,24 @@
 /* This file is (c) Johannes Thoma 2023 and is licensed under the GPL v2 */
 
-#define _WINBASE_
-#define _WINDOWS_H
-#define _INC_WINDOWS
+/* We are a NT6+ driver .. */
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x600
+#undef WINVER
+#define WINVER 0x600
 
-#include <windef.h>
+#include <ntdef.h>
+#include <wdm.h>
 #include <wsk.h>
 
-static NTSTATUS WskSocket(
+NTSTATUS NTAPI
+DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
+{
+	DbgPrint("DriverEntry ...\n");
+
+	return STATUS_SUCCESS;
+}
+
+static WSKAPI NTSTATUS WskSocket(
     PWSK_CLIENT Client,
     ADDRESS_FAMILY AddressFamily,
     USHORT SocketType,
@@ -24,7 +35,7 @@ static NTSTATUS WskSocket(
 	return STATUS_NOT_IMPLEMENTED;
 }
 
-static NTSTATUS WskSocketConnect(
+static WSKAPI NTSTATUS WskSocketConnect(
     PWSK_CLIENT Client,
     USHORT SocketType,
     ULONG Protocol,
@@ -42,7 +53,7 @@ static NTSTATUS WskSocketConnect(
 	return STATUS_NOT_IMPLEMENTED;
 }
 
-static NTSTATUS WskControlClient(
+static WSKAPI NTSTATUS WskControlClient(
     _In_ PWSK_CLIENT Client,
     _In_ ULONG ControlCode,
     _In_ SIZE_T InputSize,
