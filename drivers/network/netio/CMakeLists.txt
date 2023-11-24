@@ -1,10 +1,13 @@
 
+spec2def(netio.sys netio.spec ADD_IMPORTLIB)
+
 include_directories(
     BEFORE include
     ${REACTOS_SOURCE_DIR}/sdk/include/reactos/drivers)
 
 list(APPEND SOURCE
     netio.c
+    ${CMAKE_CURRENT_BINARY_DIR}/netio.def
     )
 
 add_library(netio MODULE ${SOURCE})
