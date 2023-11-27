@@ -7,6 +7,7 @@ include_directories(
 
 list(APPEND SOURCE
     netio.c
+    tdi.c
     ${CMAKE_CURRENT_BINARY_DIR}/netio.def
     )
 
