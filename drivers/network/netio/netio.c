@@ -9,11 +9,32 @@
 #include <ntdef.h>
 #include <wdm.h>
 #include <wsk.h>
+#include <ndis.h>
+
+#include <tdi.h>
+#include <tcpioctl.h>
+#include <tdikrnl.h>
+#include <tdiinfo.h>
+#include "tdi_proto.h"
+#include "tdiconn.h"
+
+struct _WSK_SOCKET_INTERNAL {
+	struct _WSK_SOCKET s;
+
+	ADDRESS_FAMILY family;	/* AF_INET or AF_INET6 */
+	unsigned short type;	/* SOCK_DGRAM, SOCK_STREAM, ... */
+	unsigned long proto; /* IPPROTO_UDP, IPPROTO_TCP */
+	unsigned long flags;	/* WSK_FLAG_LISTEN_SOCKET, ... */
+	void *user_context;  /* parameter for callbacks, opaque */
+
+	struct _FILE_OBJECT *file; /* Returned by TdiOpenConnectionEndpointFile() */
+	HANDLE handle; /* Returned by TdiOpenConnectionEndpointFile() */
+};
 
 NTSTATUS NTAPI
 DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
-	DbgPrint("DriverEntry ...\n");
+	DbgPrint("netio.sys DriverEntry ...\n");
 
 	return STATUS_SUCCESS;
 }
@@ -31,7 +52,55 @@ static WSKAPI NTSTATUS WskSocket(
     PSECURITY_DESCRIPTOR SecurityDescriptor,
     PIRP Irp)
 {
-	DbgPrint("Not implemented");
+	struct _WSK_SOCKET_INTERNAL *s;
+
+	if (AddressFamily != AF_INET) {
+		DbgPrint("Address family %d not supported (sorry only IPv4 support for now ...)\n", AddressFamily);
+		return STATUS_NOT_SUPPORTED;
+	}
+	switch (SocketType) {
+		case SOCK_DGRAM:
+			if (Protocol != IPPROTO_UDP) {
+				DbgPrint("SOCK_DGRAM only supports IPPROTO_UDP\n");
+				return STATUS_INVALID_PARAMETER;
+			}
+			if (Flags != WSK_FLAG_DATAGRAM_SOCKET) {
+				DbgPrint("SOCK_DGRAM flags must be WSK_FLAG_DATAGRAM_SOCKET\n");
+				return STATUS_INVALID_PARAMETER;
+			}
+			break;
+
+		case SOCK_STREAM:
+			if (Protocol != IPPROTO_TCP) {
+				DbgPrint("SOCK_STREAM only supports IPPROTO_TCP\n");
+				return STATUS_INVALID_PARAMETER;
+			}
+			if ((Flags != WSK_FLAG_CONNECTION_SOCKET) &&
+			    (Flags != WSK_FLAG_LISTEN_SOCKET)) {
+				DbgPrint("SOCK_STREAM flags must be either WSK_FLAG_CONNECTION_SOCKET or WSK_FLAG_LISTEN_SOCKET\n(sorry no WSK_FLAG_STREAM_SOCKET support\n");
+				return STATUS_INVALID_PARAMETER;
+			}
+			break;
+
+		case SOCK_RAW:
+			DbgPrint("SOCK_RAW not supported.\n"); /* fallthru */
+			return STATUS_NOT_SUPPORTED;
+
+		default:
+			return STATUS_INVALID_PARAMETER;
+	}
+	
+	s = ExAllocatePoolWithTag(NonPagedPool, sizeof(*s), 'SOCK');
+	if (s == NULL) {
+		DbgPrint("WskSocket: Out of memory\n");
+		return STATUS_INSUFFICIENT_RESOURCES;
+	}
+	s->family = AddressFamily;
+	s->type = SocketType;
+	s->proto = Protocol;
+	s->flags = Flags;
+	s->user_context = SocketContext;
+	// DbgPrint("WskSocket Not implemented\n");
 	return STATUS_NOT_IMPLEMENTED;
 }
 
@@ -49,7 +118,7 @@ static WSKAPI NTSTATUS WskSocketConnect(
     PSECURITY_DESCRIPTOR SecurityDescriptor,
     PIRP Irp)
 {
-	DbgPrint("Not implemented");
+	DbgPrint("WskSocketConnect Not implemented\n");
 	return STATUS_NOT_IMPLEMENTED;
 }
 
@@ -63,7 +132,7 @@ static WSKAPI NTSTATUS WskControlClient(
     _Out_opt_ SIZE_T *OutputSizeReturned,
     _Inout_opt_ PIRP Irp)
 {
-	DbgPrint("Not implemented");
+	DbgPrint("WskControlClient Not implemented\n");
 	return STATUS_NOT_IMPLEMENTED;
 }
 
