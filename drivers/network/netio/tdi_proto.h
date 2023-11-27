@@ -43,3 +43,10 @@ NTSTATUS TdiQueryDeviceControl(
     PVOID OutputBuffer,
     ULONG OutputBufferLength,
     PULONG Return);
+
+#define TAG_NETIO_EA_INFO 'EAIN'
+#define TAG_NETIO_DATA_BUFFER 'DATA'
+#define TAG_NETIO_TRANSPORT_ADDRESS 'ADDR'
+#define TAG_NETIO_SNMP_ADDRESS_INFO 'SNMP'
+#define TAG_NETIO_TDI_CONNECTION_INFORMATION 'CONN'
+

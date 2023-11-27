@@ -8,20 +8,6 @@
  *   CSH 01/09-2000 Created
  */
 
-// #include <afd.h>
-
-// #include <ntifs.h>
-// #include <ndk/obtypes.h>
-// #include <tcpioctl.h>
-// #include <ntddk.h>
-// #include <ntdef.h>
-// #define _WINBASE_
-// #define _WINDOWS_H
-// #define _INC_WINDOWS
-// #include <intsafe.h>
-// #include <intsafe.h>
-// #include <basetsd.h>
-// #include <ntdef.h>
 #include <ntrxdef.h>
 #include <wdm.h>
 #include <ndis.h>
@@ -34,10 +20,6 @@
 #include "tdiconn.h"
 #include "tdi_proto.h"
 
-#define TAG_NETIO_EA_INFO 'EAIN'
-#define TAG_NETIO_DATA_BUFFER 'DATA'
-#define TAG_NETIO_TRANSPORT_ADDRESS 'ADDR'
-#define TAG_NETIO_SNMP_ADDRESS_INFO 'SNMP'
 
 /* Those are taken from afd/include/afd.h : */
 
