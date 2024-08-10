@@ -68,29 +68,63 @@ struct _WSK_SOCKET_INTERNAL {
 	int Flags;	/* SO_REUSEADDR, ... see ws2def.h */
 };
 
+
+	/* This just sets the status to pending. It is been called
+	 * by the IoCallDriver() function via the MajorFunction
+	 * dispatch table in the DriverObject. We need this because
+	 * we want to use IoCallDriver to consume one stack location
+	 * of the irp. If we do not do so the completion routine of
+	 * the upper driver never gets called.
+	 */
+
+static NTSTATUS NTAPI DummyHandler(PDEVICE_OBJECT Device, PIRP Irp)
+{
+	Irp->IoStatus.Status = STATUS_PENDING;
+
+	return STATUS_PENDING;
+}
+
+struct DummyDeviceExtension { int x; };
+
+PDEVICE_OBJECT DummyDeviceObject;
+
+static NTSTATUS DummyCallDriver(PIRP Irp)
+{
+	return IoCallDriver(DummyDeviceObject, Irp);
+}
+
 NTSTATUS NTAPI
 DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
+	int i;
+	NTSTATUS status;
+	UNICODE_STRING nameUnicode;
+
 	DbgPrint("netio.sys DriverEntry ...\n");
 
+	for (i=0; i<=IRP_MJ_MAXIMUM_FUNCTION; i++)
+		DriverObject->MajorFunction[i] = DummyHandler;
+
+	RtlInitUnicodeString(&nameUnicode, L"\\Device\\NetioSysDummy");
+
+	status = IoCreateDevice(DriverObject, sizeof(struct DummyDeviceExtension),
+				&nameUnicode, FILE_DEVICE_UNKNOWN,
+				FILE_DEVICE_SECURE_OPEN, FALSE, &DummyDeviceObject);
+
+	if (!NT_SUCCESS(status))
+	{
+		DbgPrint("Can't create root, err=%x\n", status);
+		return status;
+	}
 	return STATUS_SUCCESS;
 }
 
-	/* from iofuncs.h: 
-	  PIO_STACK_LOCATION irpSp;
-  ASSERT( (InvokeOnSuccess || InvokeOnError || InvokeOnCancel) ? (CompletionRoutine != NULL) : TRUE );
-  irpSp = IoGetNextIrpStackLocation(Irp);
-  irpSp->CompletionRoutine = CompletionRoutine;
-  irpSp->Context = Context;
-  irpSp->Control = 0;
-  */
 static NTSTATUS NTAPI NetioComplete(
   PDEVICE_OBJECT DeviceObject,
   PIRP Irp,
   PVOID Context)
 {
 	PIRP UserIrp = (PIRP) Context;
-	DbgPrint("NetioComplete ...\n");
 	DbgPrint("Status is %08x\n", Irp->IoStatus.Status);
 
 	UserIrp->IoStatus.Status = Irp->IoStatus.Status;
@@ -99,64 +133,6 @@ static NTSTATUS NTAPI NetioComplete(
 	DbgPrint("About to complete UserIrp ...\n");
 	IoCompleteRequest(UserIrp, IO_NETWORK_INCREMENT);
 	DbgPrint("Ok UserIrp completed, Mdl should be freed now (or so)  ...\n");
-
-	return STATUS_SUCCESS;
-}
-
-/* TODO: remove that again: */
-
-KEVENT ConnectEvent;
-PIRP ConnectIrp;
-
-VOID NTAPI CompleteConnectIrp(IN PVOID unused)
-{
-	while (1) {
-DbgPrint("Into KeWaitForSingleObject ...\n");
-		KeWaitForSingleObject(&ConnectEvent, Executive, KernelMode, FALSE, (PLARGE_INTEGER)NULL);
-DbgPrint("Out of KeWaitForSingleObject completing %p ...\n", ConnectIrp);
-		IoCompleteRequest(ConnectIrp, IO_NETWORK_INCREMENT);
-DbgPrint("Done ...\n");
-	}
-}
-
-NTSTATUS windrbd_create_windows_thread(KSTART_ROUTINE *threadfn, void *data, void **thread_object_p)
-{
-        HANDLE h;
-        NTSTATUS status;
-
-        status = PsCreateSystemThread(&h, THREAD_ALL_ACCESS, NULL, NULL, NULL, threadfn, data);
-        if (!NT_SUCCESS(status)) {
-DbgPrint("PsCreateSystemThread failed, status is %p\n", status);
-                return status;
-	}
-
-        if (thread_object_p)
-                status = ObReferenceObjectByHandle(h, THREAD_ALL_ACCESS, NULL, KernelMode, thread_object_p, NULL);
-
-        ZwClose(h);
-DbgPrint("Ok thread should be running ...\n");
-        return status;
-}
-
-	/* Quick hack: */
-static NTSTATUS NTAPI NetioComplete2(
-  PDEVICE_OBJECT DeviceObject,
-  PIRP Irp,
-  PVOID Context)
-{
-	PIRP UserIrp = (PIRP) Context;
-	DbgPrint("NetioComplete2 ...\n");
-	DbgPrint("2: Status is %08x\n", Irp->IoStatus.Status);
-
-	UserIrp->IoStatus.Status = Irp->IoStatus.Status;
-	UserIrp->IoStatus.Information = Irp->IoStatus.Information;
-
-	DbgPrint("2: About to complete UserIrp (setting event)...\n");
-	IoCompleteRequest(UserIrp, IO_NETWORK_INCREMENT);
-//	ConnectIrp = UserIrp;
-//      KeSetEvent(&ConnectEvent, 0, FALSE);
-
-	DbgPrint("Ok event set...\n");
 
 	return STATUS_SUCCESS;
 }
@@ -326,7 +302,7 @@ static WSKAPI NTSTATUS WskBind (
 		AFD_SHARE_REUSE,
 		&s->LocalAddressHandle,
 		&s->LocalAddressFile);
-		
+
 	if (NT_SUCCESS(status)) {
 		memcpy(&s->LocalAddress, LocalAddress, sizeof(s->LocalAddress));
 	}
@@ -350,6 +326,16 @@ static WSKAPI NTSTATUS WskSendTo (
 	PTDI_CONNECTION_INFORMATION TargetConnectionInfo;
 	NTSTATUS status;
 	void *BufferData;
+
+	if (DummyDeviceObject == NULL) {
+		Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
+		return STATUS_INVALID_PARAMETER; /* TODO: something more meaningful */
+	}
+
+		/* Call ourselves. Sets status to pending. The interesting
+		 * part happens later.
+		 */
+	DummyCallDriver(Irp);
 
 	TargetConnectionInfo = TdiConnectionInfoFromSocketAddress(RemoteAddress);
 	if (TargetConnectionInfo == NULL) {
@@ -483,6 +469,11 @@ static WSKAPI NTSTATUS WskConnect(
 	struct _WSK_SOCKET_INTERNAL *s = (struct _WSK_SOCKET_INTERNAL*) Socket;
 	NTSTATUS status;
 
+		/* Call ourselves. Sets status to pending. The interesting
+		 * part happens later.
+		 */
+	DummyCallDriver(Irp);
+
 #if 0
 	PTRANSPORT_ADDRESS ta;
 
@@ -542,7 +533,7 @@ static WSKAPI NTSTATUS WskConnect(
 	}
 	IoMarkIrpPending(Irp);
 
-	status = TdiConnect(&tdiIrp, s->ConnectionFile, TargetConnectionInfo, Ignored, NetioComplete2, Irp);
+	status = TdiConnect(&tdiIrp, s->ConnectionFile, TargetConnectionInfo, Ignored, NetioComplete, Irp);
 
 //	Irp->IoStatus.Status = status;
 	return status;
@@ -645,7 +636,7 @@ static WSKAPI NTSTATUS WskSocket(
 		default:
 			return STATUS_INVALID_PARAMETER;
 	}
-	
+
 	s = ExAllocatePoolWithTag(NonPagedPool, sizeof(*s), 'SOCK');
 	if (s == NULL) {
 		DbgPrint("WskSocket: Out of memory\n");
@@ -669,9 +660,9 @@ static WSKAPI NTSTATUS WskSocket(
 		case SOCK_STREAM:
 			s->s.Dispatch = &TcpDispatch;
 			RtlInitUnicodeString(&s->TdiName, L"\\Device\\Tcp");
-				
+
 			status = TdiOpenConnectionEndpointFile(&s->TdiName, &s->ConnectionHandle, &s->ConnectionFile);
-		       	if (status != STATUS_SUCCESS) {
+			if (status != STATUS_SUCCESS) {
 				DbgPrint("Could not open TDI handle, status is %x.\n", status);
 				ExFreePoolWithTag(s, 'SOCK');
 				return status;
@@ -705,15 +696,9 @@ NTSTATUS
 WSKAPI
 WskRegister(struct _WSK_CLIENT_NPI *client_npi, struct _WSK_REGISTRATION *reg)
 {
-DbgPrint("WskRegister\n");
 	reg->ReservedRegistrationState = 42;
 	reg->ReservedRegistrationContext = NULL;
 	KeInitializeSpinLock(&reg->ReservedRegistrationLock);
-
-KeInitializeEvent(&ConnectEvent, SynchronizationEvent, FALSE);
-// DbgPrint("Creating completion thread ...\n");
-DbgPrint("NOT Creating completion thread ...\n");
-// windrbd_create_windows_thread(CompleteConnectIrp, NULL, NULL);
 
 	return STATUS_SUCCESS;
 }
