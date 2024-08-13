@@ -668,8 +668,61 @@ static WSKAPI NTSTATUS WskSend(
     _In_ ULONG Flags,
     _Inout_ PIRP Irp)
 {
-	DbgPrint("WskSend Not implemented\n");
-	return STATUS_NOT_IMPLEMENTED;
+	PIRP tdiIrp = NULL;
+	struct _WSK_SOCKET_INTERNAL *s = (struct _WSK_SOCKET_INTERNAL*) Socket;
+	NTSTATUS status;
+	void *BufferData;
+	struct NetioContext *nc;
+
+		/* Call ourselves. Sets status to pending. The interesting
+		 * part happens later.
+		 */
+DbgPrint("Irp before DummyCallDriver in WskSend is %p\n", Irp);
+	DummyCallDriver(Irp);
+		/* And hook our UserCompletion. Reason is that we need
+		 * to know when the Irp is cancelled.
+		 */
+
+/*
+	uc = HookUserComplete(Irp);
+	if (uc == NULL) {
+                Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+                return STATUS_INSUFFICIENT_RESOURCES;
+        }
+	uc->socket = s;
+*/
+
+	nc = ExAllocatePoolWithTag(NonPagedPool, sizeof(*nc), 'NEIO');
+	if (nc == NULL) {
+                Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+                return STATUS_INSUFFICIENT_RESOURCES;
+        }
+	nc->socket = s;
+	nc->UserIrp = Irp;
+
+	BufferData = MmGetSystemAddressForMdlSafe(Buffer->Mdl, NormalPagePriority);
+	if (BufferData == NULL) {
+		DbgPrint("Error mapping MDL\n");
+		Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+		return STATUS_INSUFFICIENT_RESOURCES;
+	}
+
+		/* Some drivers (like WinDRBD) do not set this.
+		 * But ReactOS seems to require this (else BSOD on completion).
+		 */
+
+	if (Irp->Tail.Overlay.Thread == NULL) {
+		Irp->Tail.Overlay.Thread = PsGetCurrentThread();
+	}
+	IoMarkIrpPending(Irp);
+		/* TODO: protect by spinlock ... */
+	InsertTailList(&s->PendingUserIrps, &Irp->Tail.Overlay.ListEntry);
+
+		/* This will create a tdiIrp: */
+	status = TdiSend(&tdiIrp, s->ConnectionFile, 0, ((char*)BufferData)+Buffer->Offset, Buffer->Length, NetioComplete, nc);
+//	uc->TdiIrp = tdiIrp;	/* starting from here we may cancel the user irp ... */
+
+	return status;
 }
 
 static WSKAPI NTSTATUS WskReceive(
