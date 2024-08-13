@@ -66,8 +66,24 @@ struct _WSK_SOCKET_INTERNAL {
 	int CallbackMask;
 
 	int Flags;	/* SO_REUSEADDR, ... see ws2def.h */
+	LIST_ENTRY PendingUserIrps;  /* Irps we got from our user.
+					For cancelling in WskClose () */
 };
 
+struct NetioContext {
+	PIRP UserIrp;
+	struct _WSK_SOCKET_INTERNAL *socket;
+};
+
+struct UserContext {
+	PIRP TdiIrp;
+	struct _WSK_SOCKET_INTERNAL *socket;
+	PIO_COMPLETION_ROUTINE OriginalCompletionRoutine;
+	PVOID OriginalContext;
+	BOOLEAN OriginalInvokeOnSuccess;
+	BOOLEAN OriginalInvokeOnError;
+	BOOLEAN OriginalInvokeOnCancel;
+};
 
 	/* This just sets the status to pending. It is been called
 	 * by the IoCallDriver() function via the MajorFunction
@@ -100,7 +116,7 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 	NTSTATUS status;
 	UNICODE_STRING nameUnicode;
 
-	DbgPrint("netio.sys DriverEntry ...\n");
+	DbgPrint("netio.sys DriverEntry compiled " __DATE__ " " __TIME__ " ...\n");
 
 	for (i=0; i<=IRP_MJ_MAXIMUM_FUNCTION; i++)
 		DriverObject->MajorFunction[i] = DummyHandler;
@@ -124,17 +140,56 @@ static NTSTATUS NTAPI NetioComplete(
   PIRP Irp,
   PVOID Context)
 {
-	PIRP UserIrp = (PIRP) Context;
-	DbgPrint("Status is %08x\n", Irp->IoStatus.Status);
+	struct NetioContext *c = (struct NetioContext*) Context;
+	PIRP *UserIrp = c->UserIrp;
+
+DbgPrint("NetioComplete Irp is %p UserIrp is %p\n", Irp, UserIrp);
 
 	UserIrp->IoStatus.Status = Irp->IoStatus.Status;
 	UserIrp->IoStatus.Information = Irp->IoStatus.Information;
 
-	DbgPrint("About to complete UserIrp ...\n");
+	RemoveEntryList(&UserIrp->Tail.Overlay.ListEntry);
 	IoCompleteRequest(UserIrp, IO_NETWORK_INCREMENT);
-	DbgPrint("Ok UserIrp completed, Mdl should be freed now (or so)  ...\n");
+
+	/* TODO: SocketPut(s) */
 
 	return STATUS_SUCCESS;
+}
+
+static NTSTATUS NTAPI UserComplete(
+  PDEVICE_OBJECT DeviceObject,
+  PIRP Irp,
+  PVOID Context)
+{
+	struct UserContext *uc = Context;
+
+	IoSetCompletionRoutine(Irp, uc->OriginalCompletionRoutine,
+			       uc->OriginalContext,
+			       uc->OriginalInvokeOnSuccess,
+			       uc->OriginalInvokeOnError,
+			       uc->OriginalInvokeOnCancel);
+
+}
+
+static struct UserContext *HookUserComplete(PIRP UserIrp)
+{
+	PIO_STACK_LOCATION irpSp;
+	struct UserContext *uc;
+
+	uc = ExAllocatePoolWithTag(NonPagedPool, sizeof(*uc), 'NEIO');
+	if (uc == NULL)
+		return NULL;
+
+	irpSp = IoGetNextIrpStackLocation(UserIrp);
+	uc->OriginalCompletionRoutine = irpSp->CompletionRoutine;
+	uc->OriginalContext = irpSp->Context;
+	uc->OriginalInvokeOnSuccess = (irpSp->Control & SL_INVOKE_ON_SUCCESS) != 0;
+	uc->OriginalInvokeOnError = (irpSp->Control & SL_INVOKE_ON_ERROR) != 0;
+	uc->OriginalInvokeOnCancel = (irpSp->Control & SL_INVOKE_ON_CANCEL) != 0;
+
+	IoSetCompletionRoutine(UserIrp, UserComplete, uc, TRUE, TRUE, TRUE);
+
+	return uc;
 }
 
 static WSKAPI NTSTATUS WskControlSocket(
@@ -232,8 +287,21 @@ static WSKAPI NTSTATUS WskCloseSocket(
     _In_ PWSK_SOCKET Socket,
     _Inout_ PIRP Irp)
 {
-	DbgPrint("WskCloseSocket: Not implemented.\n");
-	return STATUS_NOT_IMPLEMENTED;
+	PLIST_ENTRY p, p2;
+	PIRP UserIrp;
+	struct _WSK_SOCKET_INTERNAL *s = (struct _WSK_SOCKET_INTERNAL*) Socket;
+
+	/* TODO: spinlock */
+	for (p=s->PendingUserIrps.Flink; p!=&s->PendingUserIrps; p=p2) {
+		UserIrp = CONTAINING_RECORD(p, IRP, Tail.Overlay.ListEntry);
+DbgPrint("WskCloseSocket: UserIrp is %p\n", UserIrp);
+		p2 = UserIrp->Tail.Overlay.ListEntry.Flink;
+//		IoCancelIrp(UserIrp);
+	}
+DbgPrint("Finished\n");
+	/* TODO: SocketPut(s) */
+	/* TODO: DummyCallDriver and IoComplete */
+	return STATUS_SUCCESS;
 }
 
 static struct _TRANSPORT_ADDRESS *TdiTransportAddressFromSocketAddress(PSOCKADDR SocketAddress)
@@ -326,6 +394,7 @@ static WSKAPI NTSTATUS WskSendTo (
 	PTDI_CONNECTION_INFORMATION TargetConnectionInfo;
 	NTSTATUS status;
 	void *BufferData;
+	struct UserContext *uc;
 
 	if (DummyDeviceObject == NULL) {
 		Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
@@ -335,7 +404,18 @@ static WSKAPI NTSTATUS WskSendTo (
 		/* Call ourselves. Sets status to pending. The interesting
 		 * part happens later.
 		 */
+DbgPrint("Irp before DummyCallDriver in WskSendTo is %p\n", Irp);
 	DummyCallDriver(Irp);
+		/* And hook our UserCompletion. Reason is that we need
+		 * to know when the Irp is cancelled.
+		 */
+
+	uc = HookUserComplete(Irp);
+	if (uc == NULL) {
+                Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+                return STATUS_INSUFFICIENT_RESOURCES;
+        }
+	uc->socket = s;
 
 	TargetConnectionInfo = TdiConnectionInfoFromSocketAddress(RemoteAddress);
 	if (TargetConnectionInfo == NULL) {
@@ -358,9 +438,12 @@ static WSKAPI NTSTATUS WskSendTo (
 		Irp->Tail.Overlay.Thread = PsGetCurrentThread();
 	}
 	IoMarkIrpPending(Irp);
+		/* TODO: protect by spinlock ... */
+	InsertTailList(&s->PendingUserIrps, &Irp->Tail.Overlay.ListEntry);
 
 		/* This will create a tdiIrp: */
 	status = TdiSendDatagram(&tdiIrp, s->LocalAddressFile, ((char*)BufferData)+Buffer->Offset, Buffer->Length, TargetConnectionInfo, NetioComplete, Irp);
+	uc->TdiIrp = TdiIrp;
 
 	return status;
 }
@@ -472,6 +555,7 @@ static WSKAPI NTSTATUS WskConnect(
 		/* Call ourselves. Sets status to pending. The interesting
 		 * part happens later.
 		 */
+DbgPrint("Irp before DummyCallDriver in WskConnect is %p\n", Irp);
 	DummyCallDriver(Irp);
 
 #if 0
@@ -532,6 +616,7 @@ static WSKAPI NTSTATUS WskConnect(
 		Irp->Tail.Overlay.Thread = PsGetCurrentThread();
 	}
 	IoMarkIrpPending(Irp);
+	InsertTailList(&s->PendingUserIrps, &Irp->Tail.Overlay.ListEntry);
 
 	status = TdiConnect(&tdiIrp, s->ConnectionFile, TargetConnectionInfo, Ignored, NetioComplete, Irp);
 
@@ -651,6 +736,7 @@ static WSKAPI NTSTATUS WskSocket(
 	s->LocalAddressFile = NULL;
 	s->Flags = 0;
 	s->ListenDispatch = Dispatch;
+	InitializeListHead(&s->PendingUserIrps);
 
 	switch (SocketType) {
 		case SOCK_DGRAM:
@@ -677,7 +763,7 @@ static WSKAPI NTSTATUS WskSocket(
 			DbgPrint("Socket type not yet supported.\n");
 				/* A little bit later this probably crashes ... */
 	}
-	
+
 	Irp->IoStatus.Information = (ULONG_PTR) s;
 	Irp->IoStatus.Status = STATUS_SUCCESS;
 
