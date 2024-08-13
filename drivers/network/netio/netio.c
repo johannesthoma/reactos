@@ -141,15 +141,17 @@ static NTSTATUS NTAPI NetioComplete(
   PVOID Context)
 {
 	struct NetioContext *c = (struct NetioContext*) Context;
-	PIRP *UserIrp = c->UserIrp;
+	PIRP UserIrp = c->UserIrp;
 
 DbgPrint("NetioComplete Irp is %p UserIrp is %p\n", Irp, UserIrp);
 
-	UserIrp->IoStatus.Status = Irp->IoStatus.Status;
-	UserIrp->IoStatus.Information = Irp->IoStatus.Information;
+	if (!Irp->Cancel) {
+		UserIrp->IoStatus.Status = Irp->IoStatus.Status;
+		UserIrp->IoStatus.Information = Irp->IoStatus.Information;
 
-	RemoveEntryList(&UserIrp->Tail.Overlay.ListEntry);
-	IoCompleteRequest(UserIrp, IO_NETWORK_INCREMENT);
+		RemoveEntryList(&UserIrp->Tail.Overlay.ListEntry);
+		IoCompleteRequest(UserIrp, IO_NETWORK_INCREMENT);
+	}
 
 	/* TODO: SocketPut(s) */
 
@@ -169,6 +171,11 @@ static NTSTATUS NTAPI UserComplete(
 			       uc->OriginalInvokeOnError,
 			       uc->OriginalInvokeOnCancel);
 
+	if (Irp->Cancel) {
+                RemoveEntryList(&Irp->Tail.Overlay.ListEntry);
+		IoCancelIrp(uc->TdiIrp);
+	}
+	return uc->OriginalCompletionRoutine(DeviceObject, Irp, uc->OriginalContext);
 }
 
 static struct UserContext *HookUserComplete(PIRP UserIrp)
@@ -395,6 +402,7 @@ static WSKAPI NTSTATUS WskSendTo (
 	NTSTATUS status;
 	void *BufferData;
 	struct UserContext *uc;
+	struct NetioContext *nc;
 
 	if (DummyDeviceObject == NULL) {
 		Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
@@ -416,6 +424,14 @@ DbgPrint("Irp before DummyCallDriver in WskSendTo is %p\n", Irp);
                 return STATUS_INSUFFICIENT_RESOURCES;
         }
 	uc->socket = s;
+
+	nc = ExAllocatePoolWithTag(NonPagedPool, sizeof(*nc), 'NEIO');
+	if (nc == NULL) {
+                Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+                return STATUS_INSUFFICIENT_RESOURCES;
+        }
+	nc->socket = s;
+	nc->UserIrp = Irp;
 
 	TargetConnectionInfo = TdiConnectionInfoFromSocketAddress(RemoteAddress);
 	if (TargetConnectionInfo == NULL) {
@@ -442,8 +458,8 @@ DbgPrint("Irp before DummyCallDriver in WskSendTo is %p\n", Irp);
 	InsertTailList(&s->PendingUserIrps, &Irp->Tail.Overlay.ListEntry);
 
 		/* This will create a tdiIrp: */
-	status = TdiSendDatagram(&tdiIrp, s->LocalAddressFile, ((char*)BufferData)+Buffer->Offset, Buffer->Length, TargetConnectionInfo, NetioComplete, Irp);
-	uc->TdiIrp = TdiIrp;
+	status = TdiSendDatagram(&tdiIrp, s->LocalAddressFile, ((char*)BufferData)+Buffer->Offset, Buffer->Length, TargetConnectionInfo, NetioComplete, nc);
+	uc->TdiIrp = tdiIrp;	/* starting from here we may cancel the user irp ... */
 
 	return status;
 }
