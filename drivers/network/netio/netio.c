@@ -187,14 +187,17 @@ static struct UserContext *HookUserComplete(PIRP UserIrp)
 	if (uc == NULL)
 		return NULL;
 
-	irpSp = IoGetNextIrpStackLocation(UserIrp);
+	irpSp = IoGetCurrentIrpStackLocation(UserIrp);
 	uc->OriginalCompletionRoutine = irpSp->CompletionRoutine;
 	uc->OriginalContext = irpSp->Context;
 	uc->OriginalInvokeOnSuccess = (irpSp->Control & SL_INVOKE_ON_SUCCESS) != 0;
 	uc->OriginalInvokeOnError = (irpSp->Control & SL_INVOKE_ON_ERROR) != 0;
 	uc->OriginalInvokeOnCancel = (irpSp->Control & SL_INVOKE_ON_CANCEL) != 0;
 
-	IoSetCompletionRoutine(UserIrp, UserComplete, uc, TRUE, TRUE, TRUE);
+//	IoSetCompletionRoutine(UserIrp, UserComplete, uc, TRUE, TRUE, TRUE);
+	irpSp->CompletionRoutine = UserComplete;
+	irpSp->Context = uc;
+	irpSp->Control = (SL_INVOKE_ON_SUCCESS | SL_INVOKE_ON_ERROR | SL_INVOKE_ON_CANCEL);
 
 	return uc;
 }
@@ -567,12 +570,30 @@ static WSKAPI NTSTATUS WskConnect(
 	PIRP tdiIrp;
 	struct _WSK_SOCKET_INTERNAL *s = (struct _WSK_SOCKET_INTERNAL*) Socket;
 	NTSTATUS status;
+	struct UserContext *uc;
+	struct NetioContext *nc;
+
 
 		/* Call ourselves. Sets status to pending. The interesting
 		 * part happens later.
 		 */
 DbgPrint("Irp before DummyCallDriver in WskConnect is %p\n", Irp);
 	DummyCallDriver(Irp);
+
+	uc = HookUserComplete(Irp);
+	if (uc == NULL) {
+                Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+                return STATUS_INSUFFICIENT_RESOURCES;
+        }
+	uc->socket = s;
+
+	nc = ExAllocatePoolWithTag(NonPagedPool, sizeof(*nc), 'NEIO');
+	if (nc == NULL) {
+                Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+                return STATUS_INSUFFICIENT_RESOURCES;
+        }
+	nc->socket = s;
+	nc->UserIrp = Irp;
 
 #if 0
 	PTRANSPORT_ADDRESS ta;
@@ -634,7 +655,8 @@ DbgPrint("Irp before DummyCallDriver in WskConnect is %p\n", Irp);
 	IoMarkIrpPending(Irp);
 	InsertTailList(&s->PendingUserIrps, &Irp->Tail.Overlay.ListEntry);
 
-	status = TdiConnect(&tdiIrp, s->ConnectionFile, TargetConnectionInfo, Ignored, NetioComplete, Irp);
+	status = TdiConnect(&tdiIrp, s->ConnectionFile, TargetConnectionInfo, Ignored, NetioComplete, nc);
+	uc->TdiIrp = tdiIrp;	/* starting from here we may cancel the user irp ... */
 
 //	Irp->IoStatus.Status = status;
 	return status;
