@@ -116,6 +116,7 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 	NTSTATUS status;
 	UNICODE_STRING nameUnicode;
 
+//	DbgPrint("Hello world!\n");
 	DbgPrint("netio.sys DriverEntry compiled " __DATE__ " " __TIME__ " ...\n");
 
 	for (i=0; i<=IRP_MJ_MAXIMUM_FUNCTION; i++)
@@ -143,7 +144,7 @@ static NTSTATUS NTAPI NetioComplete(
 	struct NetioContext *c = (struct NetioContext*) Context;
 	PIRP UserIrp = c->UserIrp;
 
-DbgPrint("NetioComplete Irp is %p UserIrp is %p\n", Irp, UserIrp);
+// DbgPrint("NetioComplete Irp is %p UserIrp is %p\n", Irp, UserIrp);
 
 	if (!Irp->Cancel) {
 		UserIrp->IoStatus.Status = Irp->IoStatus.Status;
@@ -390,6 +391,11 @@ static WSKAPI NTSTATUS WskBind (
 	return status;
 }
 
+enum direction {
+	DIR_SEND,
+	DIR_RECEIVE
+};
+
 static WSKAPI NTSTATUS WskSendTo (
     _In_ PWSK_SOCKET Socket,
     _In_ PWSK_BUF Buffer,
@@ -408,6 +414,7 @@ static WSKAPI NTSTATUS WskSendTo (
 	struct NetioContext *nc;
 
 	if (DummyDeviceObject == NULL) {
+DbgPrint("DummyDeviceObject is NULL, was the DriverEntry funtion called?\n");
 		Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
 		return STATUS_INVALID_PARAMETER; /* TODO: something more meaningful */
 	}
@@ -415,7 +422,7 @@ static WSKAPI NTSTATUS WskSendTo (
 		/* Call ourselves. Sets status to pending. The interesting
 		 * part happens later.
 		 */
-DbgPrint("Irp before DummyCallDriver in WskSendTo is %p\n", Irp);
+// DbgPrint("Irp before DummyCallDriver in WskSendTo is %p\n", Irp);
 	DummyCallDriver(Irp);
 		/* And hook our UserCompletion. Reason is that we need
 		 * to know when the Irp is cancelled.
@@ -577,7 +584,12 @@ static WSKAPI NTSTATUS WskConnect(
 		/* Call ourselves. Sets status to pending. The interesting
 		 * part happens later.
 		 */
-DbgPrint("Irp before DummyCallDriver in WskConnect is %p\n", Irp);
+// DbgPrint("Irp before DummyCallDriver in WskConnect is %p\n", Irp);
+	if (DummyDeviceObject == NULL) {
+DbgPrint("DummyDeviceObject is NULL, was the DriverEntry funtion called?\n");
+		Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
+		return STATUS_INVALID_PARAMETER; /* TODO: something more meaningful */
+	}
 	DummyCallDriver(Irp);
 
 	uc = HookUserComplete(Irp);
@@ -662,11 +674,12 @@ DbgPrint("Irp before DummyCallDriver in WskConnect is %p\n", Irp);
 	return status;
 }
 
-static WSKAPI NTSTATUS WskSend(
+static WSKAPI NTSTATUS WskStreamIo(
     _In_ PWSK_SOCKET Socket,
     _In_ PWSK_BUF Buffer,
     _In_ ULONG Flags,
-    _Inout_ PIRP Irp)
+    _Inout_ PIRP Irp,
+    enum direction Direction)
 {
 	PIRP tdiIrp = NULL;
 	struct _WSK_SOCKET_INTERNAL *s = (struct _WSK_SOCKET_INTERNAL*) Socket;
@@ -677,7 +690,7 @@ static WSKAPI NTSTATUS WskSend(
 		/* Call ourselves. Sets status to pending. The interesting
 		 * part happens later.
 		 */
-DbgPrint("Irp before DummyCallDriver in WskSend is %p\n", Irp);
+// DbgPrint("Irp before DummyCallDriver in WskSend is %p\n", Irp);
 	DummyCallDriver(Irp);
 		/* And hook our UserCompletion. Reason is that we need
 		 * to know when the Irp is cancelled.
@@ -718,11 +731,24 @@ DbgPrint("Irp before DummyCallDriver in WskSend is %p\n", Irp);
 		/* TODO: protect by spinlock ... */
 	InsertTailList(&s->PendingUserIrps, &Irp->Tail.Overlay.ListEntry);
 
+	if (Direction == DIR_SEND) {
 		/* This will create a tdiIrp: */
-	status = TdiSend(&tdiIrp, s->ConnectionFile, 0, ((char*)BufferData)+Buffer->Offset, Buffer->Length, NetioComplete, nc);
+		status = TdiSend(&tdiIrp, s->ConnectionFile, 0, ((char*)BufferData)+Buffer->Offset, Buffer->Length, NetioComplete, nc);
+	} else {
+		status = TdiReceive(&tdiIrp, s->ConnectionFile, 0, ((char*)BufferData)+Buffer->Offset, Buffer->Length, NetioComplete, nc);
+	}
 //	uc->TdiIrp = tdiIrp;	/* starting from here we may cancel the user irp ... */
 
 	return status;
+}
+
+static WSKAPI NTSTATUS WskSend(
+    _In_ PWSK_SOCKET Socket,
+    _In_ PWSK_BUF Buffer,
+    _In_ ULONG Flags,
+    _Inout_ PIRP Irp)
+{
+	return WskStreamIo(Socket, Buffer, Flags, Irp, DIR_SEND);
 }
 
 static WSKAPI NTSTATUS WskReceive(
@@ -731,8 +757,7 @@ static WSKAPI NTSTATUS WskReceive(
     _In_ ULONG Flags,
     _Inout_ PIRP Irp)
 {
-	DbgPrint("WskReceive Not implemented\n");
-	return STATUS_NOT_IMPLEMENTED;
+	return WskStreamIo(Socket, Buffer, Flags, Irp, DIR_RECEIVE);
 }
 
 static WSKAPI NTSTATUS WskDisconnect(
