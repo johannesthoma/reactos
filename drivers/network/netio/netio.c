@@ -144,7 +144,7 @@ static NTSTATUS NTAPI NetioComplete(
 	struct NetioContext *c = (struct NetioContext*) Context;
 	PIRP UserIrp = c->UserIrp;
 
-// DbgPrint("NetioComplete Irp is %p UserIrp is %p\n", Irp, UserIrp);
+// DbgPrint("NetioComplete Irp is %p UserIrp is %p Status is 0x%08x\n", Irp, UserIrp, Irp->IoStatus.Status);
 
 	if (!Irp->Cancel) {
 		UserIrp->IoStatus.Status = Irp->IoStatus.Status;
@@ -159,6 +159,7 @@ static NTSTATUS NTAPI NetioComplete(
 	return STATUS_SUCCESS;
 }
 
+#if 0
 static NTSTATUS NTAPI UserComplete(
   PDEVICE_OBJECT DeviceObject,
   PIRP Irp,
@@ -166,6 +167,7 @@ static NTSTATUS NTAPI UserComplete(
 {
 	struct UserContext *uc = Context;
 
+DbgPrint("UserComplete %p ...\n", Irp);
 	IoSetCompletionRoutine(Irp, uc->OriginalCompletionRoutine,
 			       uc->OriginalContext,
 			       uc->OriginalInvokeOnSuccess,
@@ -174,11 +176,14 @@ static NTSTATUS NTAPI UserComplete(
 
 	if (Irp->Cancel) {
                 RemoveEntryList(&Irp->Tail.Overlay.ListEntry);
+DbgPrint("Attempt to cancel lower Irp at %p ...\n", uc->TdiIrp);
 		IoCancelIrp(uc->TdiIrp);
 	}
 	return uc->OriginalCompletionRoutine(DeviceObject, Irp, uc->OriginalContext);
 }
+#endif
 
+#if 0
 static struct UserContext *HookUserComplete(PIRP UserIrp)
 {
 	PIO_STACK_LOCATION irpSp;
@@ -195,13 +200,15 @@ static struct UserContext *HookUserComplete(PIRP UserIrp)
 	uc->OriginalInvokeOnError = (irpSp->Control & SL_INVOKE_ON_ERROR) != 0;
 	uc->OriginalInvokeOnCancel = (irpSp->Control & SL_INVOKE_ON_CANCEL) != 0;
 
-//	IoSetCompletionRoutine(UserIrp, UserComplete, uc, TRUE, TRUE, TRUE);
+DbgPrint("Ok, hooking completion of Irp %p..\n", UserIrp);
+	IoSetCompletionRoutine(UserIrp, UserComplete, uc, TRUE, TRUE, TRUE);
 	irpSp->CompletionRoutine = UserComplete;
 	irpSp->Context = uc;
 	irpSp->Control = (SL_INVOKE_ON_SUCCESS | SL_INVOKE_ON_ERROR | SL_INVOKE_ON_CANCEL);
 
 	return uc;
 }
+#endif
 
 static WSKAPI NTSTATUS WskControlSocket(
     _In_ PWSK_SOCKET Socket,
@@ -428,12 +435,14 @@ DbgPrint("DummyDeviceObject is NULL, was the DriverEntry funtion called?\n");
 		 * to know when the Irp is cancelled.
 		 */
 
+/*
 	uc = HookUserComplete(Irp);
 	if (uc == NULL) {
                 Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
                 return STATUS_INSUFFICIENT_RESOURCES;
         }
 	uc->socket = s;
+*/
 
 	nc = ExAllocatePoolWithTag(NonPagedPool, sizeof(*nc), 'NEIO');
 	if (nc == NULL) {
@@ -592,12 +601,14 @@ DbgPrint("DummyDeviceObject is NULL, was the DriverEntry funtion called?\n");
 	}
 	DummyCallDriver(Irp);
 
+/*
 	uc = HookUserComplete(Irp);
 	if (uc == NULL) {
                 Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
                 return STATUS_INSUFFICIENT_RESOURCES;
         }
 	uc->socket = s;
+*/
 
 	nc = ExAllocatePoolWithTag(NonPagedPool, sizeof(*nc), 'NEIO');
 	if (nc == NULL) {
