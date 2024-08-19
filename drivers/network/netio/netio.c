@@ -1,10 +1,21 @@
-/* This file is (c) Johannes Thoma 2023 and is licensed under the GPL v2 */
+/* This file is (c) Johannes Thoma 2023-2024 and is licensed under the GPL v2 */
 
 /* We are a NT6+ driver .. */
 #undef _WIN32_WINNT
 #define _WIN32_WINNT 0x600
 #undef WINVER
 #define WINVER 0x600
+
+/* TODOs:
+	Clean up socket in WskCloseSocket (have RefCount and
+	SocketGet / SocketPut functions).
+	Remove unnecessary code (like Hook of completion)
+	The whole Listen / Accept mechanism is still missing
+	Some minor functions (not used by WinDRBD) are missing
+	(like WskControlClient, WskSocketConnect, ...)
+	Raw sockets are not supported for now.
+	We should have regression tests for that...
+*/
 
 #include <ntdef.h>
 #include <wdm.h>
