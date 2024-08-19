@@ -15,6 +15,7 @@
 	(like WskControlClient, WskSocketConnect, ...)
 	Raw sockets are not supported for now.
 	We should have regression tests for that...
+	Rebase onto latest master
 */
 
 #include <ntdef.h>
