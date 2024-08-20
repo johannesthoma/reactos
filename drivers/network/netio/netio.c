@@ -1,4 +1,8 @@
-/* This file is (c) Johannes Thoma 2023-2024 and is licensed under the GPL v2 */
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+/* This file is (c) Johannes Thoma <johannes@johannesthoma.com 2023-2024
+   It is licensed under the GPL v2.
+ */
 
 /* We are a NT6+ driver .. */
 #undef _WIN32_WINNT
@@ -7,15 +11,17 @@
 #define WINVER 0x600
 
 /* TODOs:
-	Clean up socket in WskCloseSocket (have RefCount and
+	Done: Clean up socket in WskCloseSocket (have RefCount and
 	SocketGet / SocketPut functions).
-	Remove unnecessary code (like Hook of completion)
+	Done: Remove unnecessary code (like Hook of completion)
+	Rebase onto latest master
+	Make it compile with MS VC as well
+
 	The whole Listen / Accept mechanism is still missing
 	Some minor functions (not used by WinDRBD) are missing
 	(like WskControlClient, WskSocketConnect, ...)
 	Raw sockets are not supported for now.
 	We should have regression tests for that...
-	Rebase onto latest master
 */
 
 #include <ntdef.h>
@@ -65,9 +71,7 @@ struct _WSK_SOCKET_INTERNAL {
 	PFILE_OBJECT LocalAddressFile;
 	HANDLE LocalAddressHandle;
 
-	struct sockaddr RemoteAddress;
-	PFILE_OBJECT RemoteAddressFile;
-	HANDLE RemoteAddressHandle;
+	struct sockaddr RemoteAddress;	/* Remeber latest remote connection */
 
 		/* Those exist for connection oriented (TCP/IP) sockets only */
 	PFILE_OBJECT ConnectionFile; /* Returned by TdiOpenConnectionEndpointFile() */
@@ -80,6 +84,7 @@ struct _WSK_SOCKET_INTERNAL {
 	int Flags;	/* SO_REUSEADDR, ... see ws2def.h */
 	LIST_ENTRY PendingUserIrps;  /* Irps we got from our user.
 					For cancelling in WskClose () */
+	int RefCount;	/* See SocketGet/SocketPut TODO: this should be atomic */
 };
 
 struct NetioContext {
@@ -87,15 +92,31 @@ struct NetioContext {
 	struct _WSK_SOCKET_INTERNAL *socket;
 };
 
-struct UserContext {
-	PIRP TdiIrp;
-	struct _WSK_SOCKET_INTERNAL *socket;
-	PIO_COMPLETION_ROUTINE OriginalCompletionRoutine;
-	PVOID OriginalContext;
-	BOOLEAN OriginalInvokeOnSuccess;
-	BOOLEAN OriginalInvokeOnError;
-	BOOLEAN OriginalInvokeOnCancel;
-};
+void SocketGet(struct _WSK_SOCKET_INTERNAL *s)
+{
+	s->RefCount++;
+}
+
+void SocketPut(struct _WSK_SOCKET_INTERNAL *s)
+{
+		/* TODO: get some spinlock */
+	s->RefCount--;
+	if (s->RefCount == 0) {
+		if (s->LocalAddressHandle != INVALID_HANDLE_VALUE) {
+			ZwClose(s->LocalAddressHandle);
+			s->LocalAddressHandle = INVALID_HANDLE_VALUE;
+			s->LocalAddressFile = NULL;
+		}
+		if (s->ConnectionHandle != INVALID_HANDLE_VALUE) {
+			ZwClose(s->ConnectionHandle);
+			s->ConnectionHandle = INVALID_HANDLE_VALUE;
+			s->ConnectionFile = NULL;
+		}
+		/* TODO: Free TdiName and others ... */
+DbgPrint("NetIO: about to free socket %p ...\n", s);
+		ExFreePoolWithTag(s, 'SOCK');
+	}
+}
 
 	/* This just sets the status to pending. It is been called
 	 * by the IoCallDriver() function via the MajorFunction
@@ -128,7 +149,6 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 	NTSTATUS status;
 	UNICODE_STRING nameUnicode;
 
-//	DbgPrint("Hello world!\n");
 	DbgPrint("netio.sys DriverEntry compiled " __DATE__ " " __TIME__ " ...\n");
 
 	for (i=0; i<=IRP_MJ_MAXIMUM_FUNCTION; i++)
@@ -158,69 +178,16 @@ static NTSTATUS NTAPI NetioComplete(
 
 // DbgPrint("NetioComplete Irp is %p UserIrp is %p Status is 0x%08x\n", Irp, UserIrp, Irp->IoStatus.Status);
 
-	if (!Irp->Cancel) {
-		UserIrp->IoStatus.Status = Irp->IoStatus.Status;
-		UserIrp->IoStatus.Information = Irp->IoStatus.Information;
+	UserIrp->IoStatus.Status = Irp->IoStatus.Status;
+	UserIrp->IoStatus.Information = Irp->IoStatus.Information;
 
-		RemoveEntryList(&UserIrp->Tail.Overlay.ListEntry);
-		IoCompleteRequest(UserIrp, IO_NETWORK_INCREMENT);
-	}
+	RemoveEntryList(&UserIrp->Tail.Overlay.ListEntry);
+	IoCompleteRequest(UserIrp, IO_NETWORK_INCREMENT);
 
-	/* TODO: SocketPut(s) */
+	SocketPut(c->socket);
 
 	return STATUS_SUCCESS;
 }
-
-#if 0
-static NTSTATUS NTAPI UserComplete(
-  PDEVICE_OBJECT DeviceObject,
-  PIRP Irp,
-  PVOID Context)
-{
-	struct UserContext *uc = Context;
-
-DbgPrint("UserComplete %p ...\n", Irp);
-	IoSetCompletionRoutine(Irp, uc->OriginalCompletionRoutine,
-			       uc->OriginalContext,
-			       uc->OriginalInvokeOnSuccess,
-			       uc->OriginalInvokeOnError,
-			       uc->OriginalInvokeOnCancel);
-
-	if (Irp->Cancel) {
-                RemoveEntryList(&Irp->Tail.Overlay.ListEntry);
-DbgPrint("Attempt to cancel lower Irp at %p ...\n", uc->TdiIrp);
-		IoCancelIrp(uc->TdiIrp);
-	}
-	return uc->OriginalCompletionRoutine(DeviceObject, Irp, uc->OriginalContext);
-}
-#endif
-
-#if 0
-static struct UserContext *HookUserComplete(PIRP UserIrp)
-{
-	PIO_STACK_LOCATION irpSp;
-	struct UserContext *uc;
-
-	uc = ExAllocatePoolWithTag(NonPagedPool, sizeof(*uc), 'NEIO');
-	if (uc == NULL)
-		return NULL;
-
-	irpSp = IoGetCurrentIrpStackLocation(UserIrp);
-	uc->OriginalCompletionRoutine = irpSp->CompletionRoutine;
-	uc->OriginalContext = irpSp->Context;
-	uc->OriginalInvokeOnSuccess = (irpSp->Control & SL_INVOKE_ON_SUCCESS) != 0;
-	uc->OriginalInvokeOnError = (irpSp->Control & SL_INVOKE_ON_ERROR) != 0;
-	uc->OriginalInvokeOnCancel = (irpSp->Control & SL_INVOKE_ON_CANCEL) != 0;
-
-DbgPrint("Ok, hooking completion of Irp %p..\n", UserIrp);
-	IoSetCompletionRoutine(UserIrp, UserComplete, uc, TRUE, TRUE, TRUE);
-	irpSp->CompletionRoutine = UserComplete;
-	irpSp->Context = uc;
-	irpSp->Control = (SL_INVOKE_ON_SUCCESS | SL_INVOKE_ON_ERROR | SL_INVOKE_ON_CANCEL);
-
-	return uc;
-}
-#endif
 
 static WSKAPI NTSTATUS WskControlSocket(
     _In_ PWSK_SOCKET Socket,
@@ -317,10 +284,9 @@ static WSKAPI NTSTATUS WskCloseSocket(
     _In_ PWSK_SOCKET Socket,
     _Inout_ PIRP Irp)
 {
-	PLIST_ENTRY p, p2;
-	PIRP UserIrp;
 	struct _WSK_SOCKET_INTERNAL *s = (struct _WSK_SOCKET_INTERNAL*) Socket;
 
+#if 0
 	/* TODO: spinlock */
 	for (p=s->PendingUserIrps.Flink; p!=&s->PendingUserIrps; p=p2) {
 		UserIrp = CONTAINING_RECORD(p, IRP, Tail.Overlay.ListEntry);
@@ -328,8 +294,11 @@ DbgPrint("WskCloseSocket: UserIrp is %p\n", UserIrp);
 		p2 = UserIrp->Tail.Overlay.ListEntry.Flink;
 //		IoCancelIrp(UserIrp);
 	}
+
 DbgPrint("Finished\n");
-	/* TODO: SocketPut(s) */
+#endif
+
+	SocketPut(s);
 	/* TODO: DummyCallDriver and IoComplete */
 	return STATUS_SUCCESS;
 }
@@ -429,7 +398,6 @@ static WSKAPI NTSTATUS WskSendTo (
 	PTDI_CONNECTION_INFORMATION TargetConnectionInfo;
 	NTSTATUS status;
 	void *BufferData;
-	struct UserContext *uc;
 	struct NetioContext *nc;
 
 	if (DummyDeviceObject == NULL) {
@@ -441,20 +409,8 @@ DbgPrint("DummyDeviceObject is NULL, was the DriverEntry funtion called?\n");
 		/* Call ourselves. Sets status to pending. The interesting
 		 * part happens later.
 		 */
-// DbgPrint("Irp before DummyCallDriver in WskSendTo is %p\n", Irp);
-	DummyCallDriver(Irp);
-		/* And hook our UserCompletion. Reason is that we need
-		 * to know when the Irp is cancelled.
-		 */
 
-/*
-	uc = HookUserComplete(Irp);
-	if (uc == NULL) {
-                Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
-                return STATUS_INSUFFICIENT_RESOURCES;
-        }
-	uc->socket = s;
-*/
+	DummyCallDriver(Irp);
 
 	nc = ExAllocatePoolWithTag(NonPagedPool, sizeof(*nc), 'NEIO');
 	if (nc == NULL) {
@@ -485,13 +441,20 @@ DbgPrint("DummyDeviceObject is NULL, was the DriverEntry funtion called?\n");
 		Irp->Tail.Overlay.Thread = PsGetCurrentThread();
 	}
 	IoMarkIrpPending(Irp);
+	SocketGet(s);
 		/* TODO: protect by spinlock ... */
+		/* TODO: still needed? */
 	InsertTailList(&s->PendingUserIrps, &Irp->Tail.Overlay.ListEntry);
 
 		/* This will create a tdiIrp: */
 	status = TdiSendDatagram(&tdiIrp, s->LocalAddressFile, ((char*)BufferData)+Buffer->Offset, Buffer->Length, TargetConnectionInfo, NetioComplete, nc);
-	uc->TdiIrp = tdiIrp;	/* starting from here we may cancel the user irp ... */
 
+	/* TODO: check this again..I would assume if the TDI helper function
+	   returns any error, the completion function is not called.
+	 */
+	if (!NT_SUCCESS(status)) {
+		SocketPut(s);
+	}
 	return status;
 }
 
@@ -598,7 +561,6 @@ static WSKAPI NTSTATUS WskConnect(
 	PIRP tdiIrp;
 	struct _WSK_SOCKET_INTERNAL *s = (struct _WSK_SOCKET_INTERNAL*) Socket;
 	NTSTATUS status;
-	struct UserContext *uc;
 	struct NetioContext *nc;
 
 
@@ -613,15 +575,6 @@ DbgPrint("DummyDeviceObject is NULL, was the DriverEntry funtion called?\n");
 	}
 	DummyCallDriver(Irp);
 
-/*
-	uc = HookUserComplete(Irp);
-	if (uc == NULL) {
-                Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
-                return STATUS_INSUFFICIENT_RESOURCES;
-        }
-	uc->socket = s;
-*/
-
 	nc = ExAllocatePoolWithTag(NonPagedPool, sizeof(*nc), 'NEIO');
 	if (nc == NULL) {
                 Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -629,27 +582,6 @@ DbgPrint("DummyDeviceObject is NULL, was the DriverEntry funtion called?\n");
         }
 	nc->socket = s;
 	nc->UserIrp = Irp;
-
-#if 0
-	PTRANSPORT_ADDRESS ta;
-
-	ta = TdiTransportAddressFromSocketAddress(RemoteAddress);
-	if (ta == NULL) {
-		Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
-		return STATUS_INSUFFICIENT_RESOURCES;
-	}
-	status = TdiOpenAddressFile(&s->TdiName,
-				    ta,
-		                    AFD_SHARE_REUSE,
-                                    &s->RemoteAddressHandle,
-                                    &s->RemoteAddressFile);
-
-		/* TODO: clean up */
-	if (!NT_SUCCESS(status)) {
-		Irp->IoStatus.Status = status;
-		return status;
-	}
-#endif
 
 	tdiIrp = NULL;
 
@@ -688,12 +620,16 @@ DbgPrint("DummyDeviceObject is NULL, was the DriverEntry funtion called?\n");
 		Irp->Tail.Overlay.Thread = PsGetCurrentThread();
 	}
 	IoMarkIrpPending(Irp);
+	SocketGet(s);
 	InsertTailList(&s->PendingUserIrps, &Irp->Tail.Overlay.ListEntry);
 
 	status = TdiConnect(&tdiIrp, s->ConnectionFile, TargetConnectionInfo, Ignored, NetioComplete, nc);
-	uc->TdiIrp = tdiIrp;	/* starting from here we may cancel the user irp ... */
-
-//	Irp->IoStatus.Status = status;
+	/* TODO: check this again..I would assume if the TDI helper function
+	   returns any error, the completion function is not called.
+	 */
+	if (!NT_SUCCESS(status)) {
+		SocketPut(s);
+	}
 	return status;
 }
 
@@ -713,20 +649,7 @@ static WSKAPI NTSTATUS WskStreamIo(
 		/* Call ourselves. Sets status to pending. The interesting
 		 * part happens later.
 		 */
-// DbgPrint("Irp before DummyCallDriver in WskSend is %p\n", Irp);
 	DummyCallDriver(Irp);
-		/* And hook our UserCompletion. Reason is that we need
-		 * to know when the Irp is cancelled.
-		 */
-
-/*
-	uc = HookUserComplete(Irp);
-	if (uc == NULL) {
-                Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
-                return STATUS_INSUFFICIENT_RESOURCES;
-        }
-	uc->socket = s;
-*/
 
 	nc = ExAllocatePoolWithTag(NonPagedPool, sizeof(*nc), 'NEIO');
 	if (nc == NULL) {
@@ -753,6 +676,7 @@ static WSKAPI NTSTATUS WskStreamIo(
 	IoMarkIrpPending(Irp);
 		/* TODO: protect by spinlock ... */
 	InsertTailList(&s->PendingUserIrps, &Irp->Tail.Overlay.ListEntry);
+	SocketGet(s);
 
 	if (Direction == DIR_SEND) {
 		/* This will create a tdiIrp: */
@@ -760,7 +684,13 @@ static WSKAPI NTSTATUS WskStreamIo(
 	} else {
 		status = TdiReceive(&tdiIrp, s->ConnectionFile, 0, ((char*)BufferData)+Buffer->Offset, Buffer->Length, NetioComplete, nc);
 	}
-//	uc->TdiIrp = tdiIrp;	/* starting from here we may cancel the user irp ... */
+
+	/* TODO: check this again..I would assume if the TDI helper function
+	   returns any error, the completion function is not called.
+	 */
+	if (!NT_SUCCESS(status)) {
+		SocketPut(s);
+	}
 
 	return status;
 }
@@ -875,6 +805,8 @@ static WSKAPI NTSTATUS WskSocket(
 	s->LocalAddressFile = NULL;
 	s->Flags = 0;
 	s->ListenDispatch = Dispatch;
+	s->RefCount = 1;  /* SocketPut() is in WskCloseSocket */
+	s->ConnectionHandle = INVALID_HANDLE_VALUE;
 	InitializeListHead(&s->PendingUserIrps);
 
 	switch (SocketType) {
