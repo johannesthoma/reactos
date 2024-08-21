@@ -189,7 +189,7 @@ static NTSTATUS NTAPI NetioComplete(
 	return STATUS_SUCCESS;
 }
 
-static WSKAPI NTSTATUS WskControlSocket(
+static NTSTATUS WSKAPI WskControlSocket(
     _In_ PWSK_SOCKET Socket,
     _In_ WSK_CONTROL_SOCKET_TYPE RequestType,
     _In_ ULONG ControlCode,
