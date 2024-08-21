@@ -15,6 +15,7 @@
 	SocketGet / SocketPut functions).
 	Done: Remove unnecessary code (like Hook of completion)
 	Rebase onto latest master
+	Squash commits (git rebase -i) one for tdihelpers one for netio
 	Make it compile with MS VC as well
 
 	The whole Listen / Accept mechanism is still missing
@@ -280,7 +281,7 @@ static NTSTATUS WSKAPI WskControlSocket(
 	return status;
 }
 
-static WSKAPI NTSTATUS WskCloseSocket(
+static NTSTATUS WSKAPI WskCloseSocket(
     _In_ PWSK_SOCKET Socket,
     _Inout_ PIRP Irp)
 {
@@ -345,7 +346,7 @@ static PTDI_CONNECTION_INFORMATION TdiConnectionInfoFromSocketAddress(PSOCKADDR 
 }
 
 
-static WSKAPI NTSTATUS WskBind (
+static NTSTATUS WSKAPI WskBind (
     _In_ PWSK_SOCKET Socket,
     _In_ PSOCKADDR LocalAddress,
     _Reserved_ ULONG Flags,
@@ -384,7 +385,7 @@ enum direction {
 	DIR_RECEIVE
 };
 
-static WSKAPI NTSTATUS WskSendTo (
+static NTSTATUS WSKAPI WskSendTo (
     _In_ PWSK_SOCKET Socket,
     _In_ PWSK_BUF Buffer,
     _Reserved_ ULONG Flags,
@@ -458,7 +459,7 @@ DbgPrint("DummyDeviceObject is NULL, was the DriverEntry funtion called?\n");
 	return status;
 }
 
-static WSKAPI NTSTATUS WskReceiveFrom (
+static NTSTATUS WSKAPI WskReceiveFrom (
     _In_ PWSK_SOCKET Socket,
     _In_ PWSK_BUF Buffer,
     _Reserved_ ULONG Flags,
@@ -472,7 +473,7 @@ static WSKAPI NTSTATUS WskReceiveFrom (
 	return STATUS_NOT_IMPLEMENTED;
 }
 
-static WSKAPI NTSTATUS WskReleaseUdp (
+static NTSTATUS WSKAPI WskReleaseUdp (
     _In_ PWSK_SOCKET Socket,
     _In_ PWSK_DATAGRAM_INDICATION DatagramIndication)
 {
@@ -480,7 +481,7 @@ static WSKAPI NTSTATUS WskReleaseUdp (
 	return STATUS_NOT_IMPLEMENTED;
 }
 
-static WSKAPI NTSTATUS WskReleaseTcp (
+static NTSTATUS WSKAPI WskReleaseTcp (
     _In_ PWSK_SOCKET Socket,
     _In_ PWSK_DATA_INDICATION DataIndication)
 {
@@ -488,7 +489,7 @@ static WSKAPI NTSTATUS WskReleaseTcp (
 	return STATUS_NOT_IMPLEMENTED;
 }
 
-static WSKAPI NTSTATUS WskGetLocalAddress (
+static NTSTATUS WSKAPI WskGetLocalAddress (
     _In_ PWSK_SOCKET Socket,
     _Out_ PSOCKADDR LocalAddress,
     _Inout_ PIRP Irp)
@@ -497,7 +498,7 @@ static WSKAPI NTSTATUS WskGetLocalAddress (
 	return STATUS_NOT_IMPLEMENTED;
 }
 
-static WSKAPI NTSTATUS WskGetRemoteAddress (
+static NTSTATUS WSKAPI WskGetRemoteAddress (
     _In_ PWSK_SOCKET Socket,
     _Out_ PSOCKADDR RemoteAddress,
     _Inout_ PIRP Irp)
@@ -506,7 +507,7 @@ static WSKAPI NTSTATUS WskGetRemoteAddress (
 	return STATUS_NOT_IMPLEMENTED;
 }
 
-static WSKAPI NTSTATUS WskSocketConnect(
+static NTSTATUS WSKAPI WskSocketConnect(
     PWSK_CLIENT Client,
     USHORT SocketType,
     ULONG Protocol,
@@ -524,7 +525,7 @@ static WSKAPI NTSTATUS WskSocketConnect(
 	return STATUS_NOT_IMPLEMENTED;
 }
 
-static WSKAPI NTSTATUS WskControlClient(
+static NTSTATUS WSKAPI WskControlClient(
     _In_ PWSK_CLIENT Client,
     _In_ ULONG ControlCode,
     _In_ SIZE_T InputSize,
@@ -551,7 +552,7 @@ static struct _WSK_PROVIDER_DATAGRAM_DISPATCH UdpDispatch =
 
 /* Connection oriented routines (TCP/IP): */
 
-static WSKAPI NTSTATUS WskConnect(
+static NTSTATUS WSKAPI WskConnect(
     _In_ PWSK_SOCKET Socket,
     _In_ PSOCKADDR RemoteAddress,
     _Reserved_ ULONG Flags,
@@ -633,7 +634,7 @@ DbgPrint("DummyDeviceObject is NULL, was the DriverEntry funtion called?\n");
 	return status;
 }
 
-static WSKAPI NTSTATUS WskStreamIo(
+static NTSTATUS WSKAPI WskStreamIo(
     _In_ PWSK_SOCKET Socket,
     _In_ PWSK_BUF Buffer,
     _In_ ULONG Flags,
@@ -695,7 +696,7 @@ static WSKAPI NTSTATUS WskStreamIo(
 	return status;
 }
 
-static WSKAPI NTSTATUS WskSend(
+static NTSTATUS WSKAPI WskSend(
     _In_ PWSK_SOCKET Socket,
     _In_ PWSK_BUF Buffer,
     _In_ ULONG Flags,
@@ -704,7 +705,7 @@ static WSKAPI NTSTATUS WskSend(
 	return WskStreamIo(Socket, Buffer, Flags, Irp, DIR_SEND);
 }
 
-static WSKAPI NTSTATUS WskReceive(
+static NTSTATUS WSKAPI WskReceive(
     _In_ PWSK_SOCKET Socket,
     _In_ PWSK_BUF Buffer,
     _In_ ULONG Flags,
@@ -713,7 +714,7 @@ static WSKAPI NTSTATUS WskReceive(
 	return WskStreamIo(Socket, Buffer, Flags, Irp, DIR_RECEIVE);
 }
 
-static WSKAPI NTSTATUS WskDisconnect(
+static NTSTATUS WSKAPI WskDisconnect(
     _In_ PWSK_SOCKET Socket,
     _In_opt_ PWSK_BUF Buffer,
     _In_ ULONG Flags,
@@ -739,7 +740,7 @@ static struct _WSK_PROVIDER_CONNECTION_DISPATCH TcpDispatch =
 	.WskRelease = WskReleaseTcp,
 };
 
-static WSKAPI NTSTATUS WskSocket(
+static NTSTATUS WSKAPI WskSocket(
     PWSK_CLIENT Client,
     ADDRESS_FAMILY AddressFamily,
     USHORT SocketType,
